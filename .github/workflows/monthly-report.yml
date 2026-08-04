@@ -1,0 +1,19 @@
+name: 每月打卡月報
+
+on:
+  schedule:
+    # 00:05 UTC = 台灣時間每月1日 08:05
+    - cron: '5 0 1 * *'
+  workflow_dispatch: {} # 允許在GitHub網頁上手動觸發，方便測試
+
+jobs:
+  trigger-monthly-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 呼叫打卡機器人的月報端點（Render免費方案可能在休眠中，先喚醒等它啟動）
+        run: |
+          curl -sS --max-time 60 https://godzhunan-linebot-1.onrender.com/health || true
+          sleep 30
+          curl -f --max-time 120 -X POST \
+            -H "x-cron-secret: ${{ secrets.REPORT_CRON_SECRET }}" \
+            https://godzhunan-linebot-1.onrender.com/api/monthly-report/run

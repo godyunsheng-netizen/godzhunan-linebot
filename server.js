@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const punchRoutes = require('./routes/punch');
+const reportRoutes = require('./routes/report');
 
 const app = express();
 app.use(express.json());
@@ -13,6 +14,7 @@ app.use('/liff', express.static(path.join(__dirname, 'public/liff')));
 app.use('/test', express.static(path.join(__dirname, 'public/test')));
 
 app.use('/api', punchRoutes);
+app.use('/api', reportRoutes);
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
