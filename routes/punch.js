@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { getClientIp, isFromCompanyNetwork } = require('../network');
 const { verifyLiffToken } = require('../liffAuth');
+const { appendPunchRecord } = require('../sheets');
 
 const router = express.Router();
 
@@ -26,9 +27,19 @@ router.post('/punch', async (req, res) => {
 
   if (!netCheck.ok) {
     // 仍記錄一筆失敗紀錄，方便日後查核異常打卡嘗試
+    const failTimestamp = new Date().toISOString();
     db.prepare(
       `INSERT INTO punches (line_user_id, type, timestamp, source_ip, verified) VALUES (?, ?, ?, ?, 0)`
-    ).run(auth.userId, type, new Date().toISOString(), clientIp);
+    ).run(auth.userId, type, failTimestamp, clientIp);
+
+    appendPunchRecord({
+      name: auth.name,
+      lineUserId: auth.userId,
+      type,
+      timestamp: failTimestamp,
+      sourceIp: clientIp,
+      verified: false,
+    });
 
     return res.status(403).json({
       ok: false,
@@ -48,6 +59,15 @@ router.post('/punch', async (req, res) => {
   db.prepare(
     `INSERT INTO punches (line_user_id, type, timestamp, source_ip, verified) VALUES (?, ?, ?, ?, 1)`
   ).run(auth.userId, type, timestamp, clientIp);
+
+  appendPunchRecord({
+    name: auth.name,
+    lineUserId: auth.userId,
+    type,
+    timestamp,
+    sourceIp: clientIp,
+    verified: true,
+  });
 
   return res.json({
     ok: true,
