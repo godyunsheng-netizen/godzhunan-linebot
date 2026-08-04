@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>尬癮茶 打卡</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    :root {
+      --tiffany: #6fd6c4;
+      --green: #3fae6b;
+      --green-dark: #339358;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif;
+      background: var(--tiffany);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .phone { width: 100%; max-width: 340px; padding: 28px 20px 24px; }
+    .toast {
+      background: white; border-radius: 40px; padding: 10px 18px;
+      display: flex; align-items: center; gap: 8px;
+      font-weight: 700; font-size: 15px; color: var(--green-dark);
+      box-shadow: 0 8px 18px rgba(0,0,0,0.12);
+      width: fit-content; margin: 0 auto 22px;
+    }
+    .toast.fail { color: #d64545; }
+    .toast .check {
+      width: 20px; height: 20px; border-radius: 50%;
+      background: var(--green); color: white;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; flex-shrink: 0;
+    }
+    .toast.fail .check { background: #d64545; }
+    .card { background: white; border-radius: 26px; padding: 22px 18px; box-shadow: 0 20px 40px rgba(0,0,0,0.15); }
+    .name { text-align: center; color: #8a9a94; font-size: 13px; margin-bottom: 14px; }
+    button {
+      width: 100%; border: none; border-radius: 16px; padding: 16px 18px;
+      font-size: 17px; font-weight: 700; color: white;
+      display: flex; align-items: center; gap: 14px;
+      cursor: pointer; margin-bottom: 12px;
+    }
+    button:last-of-type { margin-bottom: 0; }
+    .in { background: var(--green); }
+    .out { background: var(--green-dark); }
+    button .icon { font-size: 22px; }
+    button .label-en { font-size: 12px; opacity: 0.85; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <div class="phone">
+    <div class="toast" id="msg">
+      <span class="emoji">😊</span>
+      <span id="msgText">尚未打卡</span>
+      <span class="check">✓</span>
+    </div>
+
+    <div class="card">
+      <div class="name" id="userName">載入中...</div>
+
+      <button class="in" onclick="punch('in')">
+        <span class="icon">⏰</span>
+        <span><div>上班</div><div class="label-en">Punch In</div></span>
+      </button>
+
+      <button class="out" onclick="punch('out')">
+        <span class="icon">🔐</span>
+        <span><div>下班</div><div class="label-en">Punch Out</div></span>
+      </button>
+    </div>
+  </div>
+
+  <script>
+    // 記得換成你自己的 LIFF ID
+    const LIFF_ID = 'YOUR_LIFF_ID';
+
+    async function init() {
+      await liff.init({ liffId: LIFF_ID });
+      if (!liff.isLoggedIn()) {
+        liff.login();
+        return;
+      }
+      const profile = await liff.getProfile();
+      document.getElementById('userName').innerText = profile.displayName;
+    }
+
+    async function punch(type) {
+      const toast = document.getElementById('msg');
+      const text = document.getElementById('msgText');
+      toast.classList.remove('fail');
+      text.innerText = '處理中...';
+      try {
+        const accessToken = liff.getAccessToken();
+        const res = await fetch('/api/punch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accessToken, type }),
+        });
+        const data = await res.json();
+        toast.classList.toggle('fail', !data.ok);
+        text.innerText = data.message + (data.reason ? `（${data.reason}）` : '');
+      } catch (e) {
+        toast.classList.add('fail');
+        text.innerText = '發生錯誤，請重試';
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

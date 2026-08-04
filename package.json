@@ -1,0 +1,17 @@
+{
+  "name": "line-checkin-bot",
+  "version": "1.0.0",
+  "description": "尬癮茶員工LINE打卡機器人 - 需連上公司網路才能打卡（DDNS動態IP驗證）",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0"
+  }
+}
