@@ -56,14 +56,18 @@
     <div class="title">🔧 打卡紀錄手動修正</div>
 
     <div class="card" id="loginCard">
-      <label>管理密碼</label>
-      <input type="password" id="password" placeholder="請輸入密碼" />
-      <div class="hint">用於補登忘記打卡、或同事出任務無法在公司WiFi打卡的情況。</div>
+      <label>你的姓名（帳號）</label>
+      <input type="text" id="operatorName" placeholder="例如：老闆、店長姓名" />
+
+      <label>你的專屬密碼</label>
+      <input type="password" id="password" placeholder="請輸入你自己的密碼" />
+      <div class="hint">每個人有自己的姓名＋密碼，不共用。修正時會記錄在備註欄，確認是誰修改的。</div>
       <button onclick="login()">登入</button>
       <div class="msg" id="loginMsg"></div>
     </div>
 
     <div class="card" id="formCard" style="display:none;">
+      <div class="hint" id="operatorHint" style="margin-bottom:10px;"></div>
       <label>員工姓名</label>
       <input list="nameList" id="name" placeholder="選擇或輸入姓名" />
       <datalist id="nameList"></datalist>
@@ -90,6 +94,7 @@
 
   <script>
     let password = '';
+    let operatorName = '';
 
     function todayStr() {
       const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
@@ -102,7 +107,13 @@
 
     async function login() {
       const loginMsg = document.getElementById('loginMsg');
+      operatorName = document.getElementById('operatorName').value.trim();
       password = document.getElementById('password').value.trim();
+      if (!operatorName) {
+        loginMsg.className = 'msg fail';
+        loginMsg.innerText = '請輸入你的姓名（操作人）';
+        return;
+      }
       if (!password) {
         loginMsg.className = 'msg fail';
         loginMsg.innerText = '請輸入密碼';
@@ -112,11 +123,14 @@
       loginMsg.innerText = '驗證中...';
 
       try {
-        const res = await fetch('/api/admin/employees?password=' + encodeURIComponent(password));
+        const res = await fetch(
+          '/api/admin/employees?operator=' + encodeURIComponent(operatorName) +
+          '&password=' + encodeURIComponent(password)
+        );
         const data = await res.json();
         if (!data.ok) {
           loginMsg.className = 'msg fail';
-          loginMsg.innerText = data.message || '密碼錯誤';
+          loginMsg.innerText = data.message || '姓名或密碼錯誤';
           return;
         }
         const nameList = document.getElementById('nameList');
@@ -129,6 +143,7 @@
 
         document.getElementById('loginCard').style.display = 'none';
         document.getElementById('formCard').style.display = 'block';
+        document.getElementById('operatorHint').innerText = `操作人：${operatorName}`;
         document.getElementById('date').value = todayStr();
         document.getElementById('time').value = nowTimeStr();
       } catch (e) {
@@ -158,7 +173,7 @@
         const res = await fetch('/api/admin/correct', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password, name, date, type, time, note }),
+          body: JSON.stringify({ password, operator: operatorName, name, date, type, time, note }),
         });
         const data = await res.json();
         formMsg.className = 'msg ' + (data.ok ? 'ok' : 'fail');

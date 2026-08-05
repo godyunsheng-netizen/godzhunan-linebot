@@ -257,7 +257,7 @@ async function logFailedAttempt({ name, type, timestamp, reason }) {
  * 只受 routes/admin.js 的密碼保護。
  * 回傳 { ok, reason? }
  */
-async function correctPunch({ name, date, type, time, note }) {
+async function correctPunch({ name, date, type, time, note, operator }) {
   if (!isConfigured()) {
     return { ok: false, reason: '尚未設定Google表單環境變數' };
   }
@@ -267,20 +267,25 @@ async function correctPunch({ name, date, type, time, note }) {
   const sheetTitle = sanitizeSheetName(name);
   await ensureSheetExists(sheets, spreadsheetId, sheetTitle, name);
 
+  // 把「誰改的、何時改的」附進備註，方便日後追查是誰做了手動修正
+  const { dateStr: opDate, timeStr: opTime } = toTaipeiParts(new Date().toISOString());
+  const operatorTag = operator ? `（由${operator}於${opDate} ${opTime}修改）` : '';
+  const fullNote = [note, operatorTag].filter(Boolean).join(' ');
+
   const rows = await getRows(sheets, spreadsheetId, sheetTitle);
   const todayIndex = findRowIndexByDate(rows, date);
   const column = type === 'in' ? 'C' : 'D';
 
   if (todayIndex !== -1) {
     await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 3, column, time);
-    if (note) {
+    if (fullNote) {
       const existing = rows[todayIndex][4] || '';
-      await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 3, 'E', existing ? `${existing}；${note}` : note);
+      await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 3, 'E', existing ? `${existing}；${fullNote}` : fullNote);
     }
   } else {
     const weekday = weekdayFromDate(date);
     const newRow =
-      type === 'in' ? [date, weekday, time, '', note || ''] : [date, weekday, '', time, note || ''];
+      type === 'in' ? [date, weekday, time, '', fullNote] : [date, weekday, '', time, fullNote];
     await appendRow(sheets, spreadsheetId, sheetTitle, newRow);
   }
 
