@@ -182,6 +182,23 @@ async function appendRow(sheets, spreadsheetId, title, row) {
   });
 }
 
+// 把整個分頁的資料列（A3開始）依日期舊→新重新排列並寫回去，由上到下由舊排到新
+async function sortRowsByDateAsc(sheets, spreadsheetId, title) {
+  const rows = await getRows(sheets, spreadsheetId, title);
+  if (rows.length <= 1) return;
+
+  const sorted = [...rows].sort((a, b) => (a[0] || '').localeCompare(b[0] || ''));
+  const alreadySorted = sorted.every((r, i) => r[0] === rows[i][0]);
+  if (alreadySorted) return;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${quoteSheetName(title)}!A3`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: sorted },
+  });
+}
+
 /**
  * 記錄一筆「成功」的打卡（已經通過LINE身份驗證＋公司WiFi驗證）。
  * 內建防呆機制：
@@ -212,6 +229,7 @@ async function recordSuccessfulPunch({ name, type, timestamp }) {
       await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 3, 'C', timeStr);
     } else {
       await appendRow(sheets, spreadsheetId, sheetTitle, [dateStr, weekday, timeStr, '', '']);
+      await sortRowsByDateAsc(sheets, spreadsheetId, sheetTitle);
     }
     return { ok: true };
   }
@@ -245,6 +263,7 @@ async function logFailedAttempt({ name, type, timestamp, reason }) {
       await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 3, 'E', existing + note);
     } else {
       await appendRow(sheets, spreadsheetId, sheetTitle, [dateStr, weekday, '', '', note]);
+      await sortRowsByDateAsc(sheets, spreadsheetId, sheetTitle);
     }
   } catch (err) {
     console.error('[sheets] 記錄失敗打卡嘗試時發生錯誤：', err.message);
@@ -287,8 +306,19 @@ async function correctPunch({ name, date, type, time, note, operator }) {
     const newRow =
       type === 'in' ? [date, weekday, time, '', fullNote] : [date, weekday, '', time, fullNote];
     await appendRow(sheets, spreadsheetId, sheetTitle, newRow);
+    await sortRowsByDateAsc(sheets, spreadsheetId, sheetTitle);
   }
 
+  return { ok: true };
+}
+
+// 手動觸發：把某位員工的分頁重新依日期舊→新排序（例如直接在表單裡手動改過資料順序後想恢復排序）
+async function sortEmployeeSheet(name) {
+  if (!isConfigured()) return { ok: false, reason: '尚未設定Google表單環境變數' };
+  const sheets = getSheetsClient();
+  const spreadsheetId = process.env.GOOGLE_SHEET_ID;
+  const sheetTitle = sanitizeSheetName(name);
+  await sortRowsByDateAsc(sheets, spreadsheetId, sheetTitle);
   return { ok: true };
 }
 
@@ -297,6 +327,7 @@ module.exports = {
   recordSuccessfulPunch,
   logFailedAttempt,
   correctPunch,
+  sortEmployeeSheet,
   HEADER_ROW,
   NAME_LABEL,
   sanitizeSheetName,

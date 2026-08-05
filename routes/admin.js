@@ -1,7 +1,7 @@
 // 手動修正打卡紀錄的後端：每位登入者（老闆、店長...）都有自己專屬的帳號密碼，不共用。
 // 使用情境：同事出任務提早離開、忘記在公司WiFi打下班卡等，防呆機制正確擋下但需要人工補登的狀況。
 const express = require('express');
-const { correctPunch } = require('../sheets');
+const { correctPunch, sortEmployeeSheet } = require('../sheets');
 const { listEmployeeSheetLinks } = require('../monthlyReport');
 
 const router = express.Router();
@@ -79,6 +79,25 @@ router.post('/admin/correct', async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error('[admin] 修正打卡紀錄失敗：', err);
+    return res.status(500).json({ ok: false, message: err.message });
+  }
+});
+
+// POST /api/admin/sort  body: { operator, password }  -> 把所有員工分頁都依日期新→舊重新排序
+router.post('/admin/sort', async (req, res) => {
+  const auth = authenticate(req);
+  if (!auth.ok) {
+    return res.status(401).json({ ok: false, message: '姓名或密碼錯誤' });
+  }
+  try {
+    const links = await listEmployeeSheetLinks();
+    for (const link of links) {
+      await sortEmployeeSheet(link.name);
+    }
+    console.log(`[admin] 重新排序完成：操作人=${auth.operator} 共${links.length}位員工`);
+    return res.json({ ok: true, count: links.length });
+  } catch (err) {
+    console.error('[admin] 重新排序失敗：', err);
     return res.status(500).json({ ok: false, message: err.message });
   }
 });
