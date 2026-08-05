@@ -102,17 +102,30 @@ function buildOverview(rows) {
   return overviewRows;
 }
 
-// 在既有的打卡紀錄表單裡新增一個「月報_YYYY年MM月」分頁，寫入總覽+明細
+// 在既有的打卡紀錄表單裡新增（或更新）一個「月報_YYYY年MM月」分頁，寫入總覽+明細
+// 如果這個月的月報分頁已經存在（例如用關鍵字重複手動觸發），改成清空重寫，不會一直增生新分頁而出錯
 async function createReportSheet({ sheetsApi, spreadsheetId, year, month, rows }) {
   const title = sanitizeSheetName(`月報_${year}年${String(month).padStart(2, '0')}月`);
 
-  const { data: batchUpdateResult } = await sheetsApi.spreadsheets.batchUpdate({
-    spreadsheetId,
-    requestBody: {
-      requests: [{ addSheet: { properties: { title } } }],
-    },
-  });
-  const newSheetId = batchUpdateResult.replies[0].addSheet.properties.sheetId;
+  const meta = await getSpreadsheetMeta(sheetsApi, spreadsheetId);
+  const existing = (meta.sheets || []).find((s) => s.properties.title === title);
+
+  let sheetId;
+  if (existing) {
+    sheetId = existing.properties.sheetId;
+    await sheetsApi.spreadsheets.values.clear({
+      spreadsheetId,
+      range: `${quoteSheetName(title)}!A1:Z10000`,
+    });
+  } else {
+    const { data: batchUpdateResult } = await sheetsApi.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title } } }],
+      },
+    });
+    sheetId = batchUpdateResult.replies[0].addSheet.properties.sheetId;
+  }
 
   const overviewRows = buildOverview(rows);
   const detailStartRow = overviewRows.length + 2; // 總覽下面空一行再放明細
@@ -130,7 +143,7 @@ async function createReportSheet({ sheetsApi, spreadsheetId, year, month, rows }
 
   return {
     title,
-    url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${newSheetId}`,
+    url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${sheetId}`,
   };
 }
 
