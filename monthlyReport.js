@@ -1,9 +1,11 @@
 // 每月月報：從各員工的Google試算表分頁彙整上個月的打卡紀錄，
-// 產生一份新的Google表單檔案（總覽＋明細），分享給老闆，並用LINE推播通知。
+// 在同一份「尬癮茶打卡紀錄」表單裡新增一個月報分頁（總覽+明細），並用LINE推播通知連結。
+// 註：不用「另外建立新檔案」的做法，是因為服務帳號在一般Gmail帳號下建立全新檔案會被
+// Google擋下權限（沒有Drive儲存空間），改成在既有、已分享的表單裡加分頁就完全沒有這個問題。
 const { google } = require('googleapis');
 const axios = require('axios');
 const { getAuth, isConfigured: isGoogleConfigured } = require('./googleAuth');
-const { HEADER_ROW, quoteSheetName } = require('./sheets');
+const { HEADER_ROW, quoteSheetName, sanitizeSheetName } = require('./sheets');
 
 const LEGACY_SHEET_TITLE = '工作表1'; // 早期還沒分人之前的舊分頁，月報彙整時要排除，避免重複計算
 
@@ -11,8 +13,7 @@ function isReportConfigured() {
   return !!(
     isGoogleConfigured() &&
     process.env.LINE_CHANNEL_ACCESS_TOKEN &&
-    process.env.LINE_OWNER_USER_ID &&
-    process.env.OWNER_GOOGLE_EMAIL
+    process.env.LINE_OWNER_USER_ID
   );
 }
 
@@ -36,17 +37,18 @@ function resolveTargetMonth(overrideYear, overrideMonth) {
   return { year, month }; // month為1-12
 }
 
-async function listEmployeeSheetTitles(sheets, spreadsheetId) {
+async function getSpreadsheetMeta(sheets, spreadsheetId) {
   const { data } = await sheets.spreadsheets.get({ spreadsheetId });
-  return (data.sheets || [])
-    .map((s) => s.properties.title)
-    .filter((title) => title !== LEGACY_SHEET_TITLE);
+  return data;
 }
 
 // 撈出所有員工分頁裡，時間落在目標月份的資料列
-async function collectMonthRecords(sheets, spreadsheetId, year, month) {
+async function collectMonthRecords(sheets, spreadsheetId, year, month, meta) {
   const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
-  const titles = await listEmployeeSheetTitles(sheets, spreadsheetId);
+  const titles = (meta.sheets || [])
+    .map((s) => s.properties.title)
+    .filter((title) => title !== LEGACY_SHEET_TITLE && !title.startsWith('月報_'));
+
   if (titles.length === 0) return [];
 
   const { data } = await sheets.spreadsheets.values.batchGet({
@@ -94,43 +96,36 @@ function buildOverview(rows) {
   return overviewRows;
 }
 
-// 建立一份新的Google表單檔案，寫入總覽+明細，並分享給老闆
-async function createReportSpreadsheet({ sheetsApi, driveApi, year, month, rows }) {
-  const title = `尬癮茶打卡月報_${year}年${String(month).padStart(2, '0')}月`;
+// 在既有的打卡紀錄表單裡新增一個「月報_YYYY年MM月」分頁，寫入總覽+明細
+async function createReportSheet({ sheetsApi, spreadsheetId, year, month, rows }) {
+  const title = sanitizeSheetName(`月報_${year}年${String(month).padStart(2, '0')}月`);
 
-  const { data: created } = await sheetsApi.spreadsheets.create({
+  const { data: batchUpdateResult } = await sheetsApi.spreadsheets.batchUpdate({
+    spreadsheetId,
     requestBody: {
-      properties: { title },
-      sheets: [{ properties: { title: '總覽' } }, { properties: { title: '明細' } }],
+      requests: [{ addSheet: { properties: { title } } }],
     },
   });
-  const spreadsheetId = created.spreadsheetId;
+  const newSheetId = batchUpdateResult.replies[0].addSheet.properties.sheetId;
 
   const overviewRows = buildOverview(rows);
-  const detailRows = [HEADER_ROW, ...rows];
+  const detailStartRow = overviewRows.length + 2; // 總覽下面空一行再放明細
 
   await sheetsApi.spreadsheets.values.batchUpdate({
     spreadsheetId,
     requestBody: {
       valueInputOption: 'USER_ENTERED',
       data: [
-        { range: '總覽!A1', values: overviewRows },
-        { range: '明細!A1', values: detailRows },
+        { range: `${quoteSheetName(title)}!A1`, values: overviewRows },
+        { range: `${quoteSheetName(title)}!A${detailStartRow}`, values: [HEADER_ROW, ...rows] },
       ],
     },
   });
 
-  await driveApi.permissions.create({
-    fileId: spreadsheetId,
-    sendNotificationEmail: false,
-    requestBody: {
-      type: 'user',
-      role: 'writer',
-      emailAddress: process.env.OWNER_GOOGLE_EMAIL,
-    },
-  });
-
-  return { spreadsheetId, title, url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` };
+  return {
+    title,
+    url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${newSheetId}`,
+  };
 }
 
 async function pushLineMessage(text) {
@@ -153,23 +148,24 @@ async function pushLineMessage(text) {
 async function runMonthlyReport({ overrideYear, overrideMonth } = {}) {
   if (!isReportConfigured()) {
     throw new Error(
-      '月報功能尚未設定完整環境變數（需要 GOOGLE_*, LINE_CHANNEL_ACCESS_TOKEN, LINE_OWNER_USER_ID, OWNER_GOOGLE_EMAIL）'
+      '月報功能尚未設定完整環境變數（需要 GOOGLE_*, LINE_CHANNEL_ACCESS_TOKEN, LINE_OWNER_USER_ID）'
     );
   }
 
   const { year, month } = resolveTargetMonth(overrideYear, overrideMonth);
   const auth = getAuth();
   const sheetsApi = google.sheets({ version: 'v4', auth });
-  const driveApi = google.drive({ version: 'v3', auth });
+  const spreadsheetId = process.env.GOOGLE_SHEET_ID;
 
-  const rows = await collectMonthRecords(sheetsApi, process.env.GOOGLE_SHEET_ID, year, month);
+  const meta = await getSpreadsheetMeta(sheetsApi, spreadsheetId);
+  const rows = await collectMonthRecords(sheetsApi, spreadsheetId, year, month, meta);
 
   if (rows.length === 0) {
     await pushLineMessage(`📊 ${year}年${month}月 打卡月報\n這個月沒有任何打卡紀錄。`);
     return { year, month, count: 0, sent: true };
   }
 
-  const report = await createReportSpreadsheet({ sheetsApi, driveApi, year, month, rows });
+  const report = await createReportSheet({ sheetsApi, spreadsheetId, year, month, rows });
 
   const uniqueNames = new Set(rows.map((r) => r[0]));
   await pushLineMessage(
