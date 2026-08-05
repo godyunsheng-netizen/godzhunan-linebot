@@ -181,4 +181,4 @@ async function runMonthlyReport({ overrideYear, overrideMonth } = {}) {
   return { year, month, count: rows.length, sent: true, url: report.url };
 }
 
-module.exports = { runMonthlyReport, resolveTargetMonth, isReportConfigured };
+module.exports = { runMonthlyReport, resolveTargetMonth, isReportConfigured, pushLineMessage };

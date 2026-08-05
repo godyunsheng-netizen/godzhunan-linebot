@@ -1,0 +1,16 @@
+name: 推送表單連結到LINE
+
+on:
+  workflow_dispatch: # 手動觸發：想要拿目前打卡紀錄表單的連結時，來這裡按「Run workflow」
+
+jobs:
+  send-link:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 呼叫打卡機器人，推送目前表單連結到LINE（Render免費方案可能在休眠中，先喚醒等它啟動）
+        run: |
+          curl -sS --max-time 60 https://godzhunan-linebot-1.onrender.com/health || true
+          sleep 30
+          curl -f --max-time 60 -X POST \
+            -H "x-cron-secret: ${{ secrets.REPORT_CRON_SECRET }}" \
+            https://godzhunan-linebot-1.onrender.com/api/monthly-report/send-link
