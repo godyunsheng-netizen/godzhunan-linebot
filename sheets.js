@@ -168,7 +168,7 @@ async function recordSuccessfulPunch({ name, type, timestamp }) {
   if (type === 'in') {
     const todayIndex = findRowIndexByDate(rows, dateStr);
     if (todayIndex !== -1 && rows[todayIndex][3]) {
-      return { ok: false, reason: '今天已經打過上班卡了，不能重複打卡' };
+      return { ok: false, reason: '今天已經打過上班卡囉' };
     }
     if (todayIndex !== -1) {
       await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 2, 'D', timeStr);
