@@ -4,6 +4,7 @@ const path = require('path');
 const punchRoutes = require('./routes/punch');
 const reportRoutes = require('./routes/report');
 const webhookRoutes = require('./routes/webhook');
+const adminRoutes = require('./routes/admin');
 
 const app = express();
 
@@ -18,8 +19,12 @@ app.use('/liff', express.static(path.join(__dirname, 'public/liff')));
 // 測試頁面（不需要LINE，直接用瀏覽器打開測試打卡流程；TEST_MODE=true才能用）
 app.use('/test', express.static(path.join(__dirname, 'public/test')));
 
+// 手動修正打卡紀錄頁面（需要密碼ADMIN_PASSWORD才能查詢/修正，給老闆自己用）
+app.use('/admin', express.static(path.join(__dirname, 'public/admin')));
+
 app.use('/api', punchRoutes);
 app.use('/api', reportRoutes);
+app.use('/api', adminRoutes);
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 

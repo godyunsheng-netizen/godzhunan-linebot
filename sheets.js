@@ -44,6 +44,12 @@ function toTaipeiParts(isoTimestamp) {
   return { dateStr, timeStr, weekday };
 }
 
+// 純日期字串（YYYY-MM-DD，手動修正表單用）算出是星期幾，不牽涉時區偏移
+function weekdayFromDate(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  return WEEKDAY_NAMES[d.getUTCDay()];
+}
+
 async function loadKnownSheetTitles(sheets, spreadsheetId) {
   const { data } = await sheets.spreadsheets.get({ spreadsheetId });
   knownSheetTitles = new Set((data.sheets || []).map((s) => s.properties.title));
@@ -245,10 +251,47 @@ async function logFailedAttempt({ name, type, timestamp, reason }) {
   }
 }
 
+/**
+ * 管理者手動修正一筆打卡（例如同事出任務提早離開、忘記在公司WiFi打下班卡）。
+ * 跟 recordSuccessfulPunch 不同：這裡刻意不做防呆檢查（防呆機制擋下的情況正是要靠這裡修正），
+ * 只受 routes/admin.js 的密碼保護。
+ * 回傳 { ok, reason? }
+ */
+async function correctPunch({ name, date, type, time, note }) {
+  if (!isConfigured()) {
+    return { ok: false, reason: '尚未設定Google表單環境變數' };
+  }
+
+  const sheets = getSheetsClient();
+  const spreadsheetId = process.env.GOOGLE_SHEET_ID;
+  const sheetTitle = sanitizeSheetName(name);
+  await ensureSheetExists(sheets, spreadsheetId, sheetTitle, name);
+
+  const rows = await getRows(sheets, spreadsheetId, sheetTitle);
+  const todayIndex = findRowIndexByDate(rows, date);
+  const column = type === 'in' ? 'C' : 'D';
+
+  if (todayIndex !== -1) {
+    await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 3, column, time);
+    if (note) {
+      const existing = rows[todayIndex][4] || '';
+      await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 3, 'E', existing ? `${existing}；${note}` : note);
+    }
+  } else {
+    const weekday = weekdayFromDate(date);
+    const newRow =
+      type === 'in' ? [date, weekday, time, '', note || ''] : [date, weekday, '', time, note || ''];
+    await appendRow(sheets, spreadsheetId, sheetTitle, newRow);
+  }
+
+  return { ok: true };
+}
+
 module.exports = {
   isConfigured,
   recordSuccessfulPunch,
   logFailedAttempt,
+  correctPunch,
   HEADER_ROW,
   NAME_LABEL,
   sanitizeSheetName,

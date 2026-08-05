@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>尬癮茶 打卡紀錄修正</title>
+  <style>
+    :root {
+      --tiffany: #6fd6c4;
+      --green: #3fae6b;
+      --green-dark: #339358;
+      --red: #d64545;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif;
+      background: var(--tiffany);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .wrap { width: 100%; max-width: 380px; }
+    .title { text-align: center; color: white; font-weight: 700; font-size: 18px; margin-bottom: 16px; }
+    .card { background: white; border-radius: 26px; padding: 24px 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.15); }
+    label { display: block; font-size: 13px; color: #6b7a75; font-weight: 700; margin: 14px 0 6px; }
+    label:first-of-type { margin-top: 0; }
+    input, select, textarea {
+      width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid #dfe7e4;
+      font-size: 15px; font-family: inherit; background: #f7faf9;
+    }
+    textarea { resize: vertical; min-height: 50px; }
+    .type-row { display: flex; gap: 10px; }
+    .type-row label.opt {
+      flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 12px; border-radius: 12px; border: 1px solid #dfe7e4; background: #f7faf9;
+      font-size: 15px; font-weight: 700; color: #6b7a75; margin: 0; cursor: pointer;
+    }
+    .type-row input[type="radio"] { width: auto; accent-color: var(--green); }
+    .type-row label.opt:has(input:checked) { border-color: var(--green); color: var(--green-dark); background: #eafaf1; }
+    button {
+      width: 100%; border: none; border-radius: 16px; padding: 15px 18px; margin-top: 20px;
+      font-size: 16px; font-weight: 700; color: white; background: var(--green); cursor: pointer;
+    }
+    button:disabled { opacity: 0.6; }
+    .msg { text-align: center; font-size: 14px; font-weight: 700; margin-top: 14px; min-height: 18px; }
+    .msg.ok { color: var(--green-dark); }
+    .msg.fail { color: var(--red); }
+    .hint { font-size: 12px; color: #8a9a94; margin-top: 4px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">🔧 打卡紀錄手動修正</div>
+
+    <div class="card" id="loginCard">
+      <label>管理密碼</label>
+      <input type="password" id="password" placeholder="請輸入密碼" />
+      <div class="hint">用於補登忘記打卡、或同事出任務無法在公司WiFi打卡的情況。</div>
+      <button onclick="login()">登入</button>
+      <div class="msg" id="loginMsg"></div>
+    </div>
+
+    <div class="card" id="formCard" style="display:none;">
+      <label>員工姓名</label>
+      <input list="nameList" id="name" placeholder="選擇或輸入姓名" />
+      <datalist id="nameList"></datalist>
+
+      <label>日期</label>
+      <input type="date" id="date" />
+
+      <label>類型</label>
+      <div class="type-row">
+        <label class="opt"><input type="radio" name="type" value="in" checked /> 上班</label>
+        <label class="opt"><input type="radio" name="type" value="out" /> 下班</label>
+      </div>
+
+      <label>時間</label>
+      <input type="time" id="time" />
+
+      <label>備註（選填）</label>
+      <textarea id="note" placeholder="例如：出任務提早離開，無法在公司WiFi打下班卡，補登"></textarea>
+
+      <button onclick="submitCorrection()">送出修正</button>
+      <div class="msg" id="formMsg"></div>
+    </div>
+  </div>
+
+  <script>
+    let password = '';
+
+    function todayStr() {
+      const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
+      return now.toISOString().slice(0, 10);
+    }
+    function nowTimeStr() {
+      const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
+      return now.toISOString().slice(11, 16);
+    }
+
+    async function login() {
+      const loginMsg = document.getElementById('loginMsg');
+      password = document.getElementById('password').value.trim();
+      if (!password) {
+        loginMsg.className = 'msg fail';
+        loginMsg.innerText = '請輸入密碼';
+        return;
+      }
+      loginMsg.className = 'msg';
+      loginMsg.innerText = '驗證中...';
+
+      try {
+        const res = await fetch('/api/admin/employees?password=' + encodeURIComponent(password));
+        const data = await res.json();
+        if (!data.ok) {
+          loginMsg.className = 'msg fail';
+          loginMsg.innerText = data.message || '密碼錯誤';
+          return;
+        }
+        const nameList = document.getElementById('nameList');
+        nameList.innerHTML = '';
+        (data.names || []).forEach((n) => {
+          const opt = document.createElement('option');
+          opt.value = n;
+          nameList.appendChild(opt);
+        });
+
+        document.getElementById('loginCard').style.display = 'none';
+        document.getElementById('formCard').style.display = 'block';
+        document.getElementById('date').value = todayStr();
+        document.getElementById('time').value = nowTimeStr();
+      } catch (e) {
+        loginMsg.className = 'msg fail';
+        loginMsg.innerText = '連線失敗，請重試';
+      }
+    }
+
+    async function submitCorrection() {
+      const formMsg = document.getElementById('formMsg');
+      const name = document.getElementById('name').value.trim();
+      const date = document.getElementById('date').value;
+      const time = document.getElementById('time').value;
+      const note = document.getElementById('note').value.trim();
+      const type = document.querySelector('input[name="type"]:checked').value;
+
+      if (!name || !date || !time) {
+        formMsg.className = 'msg fail';
+        formMsg.innerText = '姓名、日期、時間都要填寫';
+        return;
+      }
+
+      formMsg.className = 'msg';
+      formMsg.innerText = '送出中...';
+
+      try {
+        const res = await fetch('/api/admin/correct', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password, name, date, type, time, note }),
+        });
+        const data = await res.json();
+        formMsg.className = 'msg ' + (data.ok ? 'ok' : 'fail');
+        formMsg.innerText = data.ok
+          ? `已修正：${name} ${date} ${type === 'in' ? '上班' : '下班'} ${time}`
+          : (data.message || '修正失敗');
+        if (data.ok) {
+          document.getElementById('note').value = '';
+        }
+      } catch (e) {
+        formMsg.className = 'msg fail';
+        formMsg.innerText = '連線失敗，請重試';
+      }
+    }
+  </script>
+</body>
+</html>
