@@ -2,7 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { getClientIp, isFromCompanyNetwork } = require('../network');
 const { verifyLiffToken } = require('../liffAuth');
-const { appendPunchRecord } = require('../sheets');
+const { recordSuccessfulPunch, logFailedAttempt } = require('../sheets');
 
 const router = express.Router();
 
@@ -26,19 +26,17 @@ router.post('/punch', async (req, res) => {
   const netCheck = skip ? { ok: true } : await isFromCompanyNetwork(clientIp);
 
   if (!netCheck.ok) {
-    // 仍記錄一筆失敗紀錄，方便日後查核異常打卡嘗試
+    // 仍記錄一筆失敗紀錄（寫進當天備註欄），方便日後查核異常打卡嘗試
     const failTimestamp = new Date().toISOString();
     db.prepare(
       `INSERT INTO punches (line_user_id, type, timestamp, source_ip, verified) VALUES (?, ?, ?, ?, 0)`
     ).run(auth.userId, type, failTimestamp, clientIp);
 
-    appendPunchRecord({
+    logFailedAttempt({
       name: auth.name,
-      lineUserId: auth.userId,
       type,
       timestamp: failTimestamp,
-      sourceIp: clientIp,
-      verified: false,
+      reason: '未連上公司WiFi',
     });
 
     return res.status(403).json({
@@ -48,26 +46,24 @@ router.post('/punch', async (req, res) => {
     });
   }
 
-  // 3. 確保員工存在（第一次打卡自動建檔）
+  // 3. 防呆檢查：上班不能重複打，下班要先打過上班（以Google表單為準，因為那是永久保存的紀錄）
+  const timestamp = new Date().toISOString();
+  const guard = await recordSuccessfulPunch({ name: auth.name, type, timestamp });
+
+  if (!guard.ok) {
+    return res.status(409).json({ ok: false, message: guard.reason });
+  }
+
+  // 4. 確保員工存在（第一次打卡自動建檔）
   db.prepare(
     `INSERT INTO employees (line_user_id, name) VALUES (?, ?)
      ON CONFLICT(line_user_id) DO UPDATE SET name = excluded.name`
   ).run(auth.userId, auth.name);
 
-  // 4. 寫入打卡紀錄
-  const timestamp = new Date().toISOString();
+  // 5. 寫入打卡紀錄（本機即時查詢用；正式永久紀錄在Google表單）
   db.prepare(
     `INSERT INTO punches (line_user_id, type, timestamp, source_ip, verified) VALUES (?, ?, ?, ?, 1)`
   ).run(auth.userId, type, timestamp, clientIp);
-
-  appendPunchRecord({
-    name: auth.name,
-    lineUserId: auth.userId,
-    type,
-    timestamp,
-    sourceIp: clientIp,
-    verified: true,
-  });
 
   return res.json({
     ok: true,

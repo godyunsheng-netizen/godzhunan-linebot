@@ -59,8 +59,8 @@ async function collectMonthRecords(sheets, spreadsheetId, year, month, meta) {
   const rows = [];
   (data.valueRanges || []).forEach((vr) => {
     (vr.values || []).forEach((row) => {
-      const timestamp = row[3] || '';
-      if (timestamp.startsWith(monthPrefix)) {
+      const dateStr = row[1] || ''; // 日期欄
+      if (dateStr.startsWith(monthPrefix)) {
         rows.push(row);
       }
     });
@@ -68,30 +68,30 @@ async function collectMonthRecords(sheets, spreadsheetId, year, month, meta) {
 
   rows.sort((a, b) => {
     if (a[0] !== b[0]) return String(a[0]).localeCompare(String(b[0]), 'zh-Hant');
-    return String(a[3]).localeCompare(String(b[3]));
+    return String(a[1]).localeCompare(String(b[1]));
   });
 
   return rows;
 }
 
+// rows的欄位為：姓名/日期/星期幾/上班時間/下班時間/備註（一天一列）
 function buildOverview(rows) {
   const byName = new Map();
   rows.forEach((row) => {
     const name = row[0] || '（未知）';
-    if (!byName.has(name)) byName.set(name, { in: 0, out: 0, failed: 0 });
+    const shangban = row[3];
+    const xiaban = row[4];
+    const note = row[5];
+    if (!byName.has(name)) byName.set(name, { full: 0, missingOut: 0, notes: 0 });
     const stat = byName.get(name);
-    if (row[5] !== '成功') {
-      stat.failed += 1;
-    } else if (row[2] === '上班') {
-      stat.in += 1;
-    } else if (row[2] === '下班') {
-      stat.out += 1;
-    }
+    if (shangban && xiaban) stat.full += 1;
+    else if (shangban && !xiaban) stat.missingOut += 1;
+    if (note) stat.notes += 1;
   });
 
-  const overviewRows = [['姓名', '上班次數', '下班次數', '失敗次數', '總筆數']];
+  const overviewRows = [['姓名', '完整出勤天數', '忘記打下班卡天數', '異常次數']];
   byName.forEach((stat, name) => {
-    overviewRows.push([name, stat.in, stat.out, stat.failed, stat.in + stat.out + stat.failed]);
+    overviewRows.push([name, stat.full, stat.missingOut, stat.notes]);
   });
   return overviewRows;
 }

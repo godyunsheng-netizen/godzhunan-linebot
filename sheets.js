@@ -1,12 +1,17 @@
 // 將打卡紀錄永久寫入 Google 試算表（作為SQLite以外的永久備份，方便用Excel/Google試算表統計）
-// 每位員工會各自有一個分頁（工作表），彼此打卡紀錄不會混在一起
+// 每位員工會各自有一個分頁（工作表），彼此打卡紀錄不會混在一起。
+// 表格格式改成「一天一列」：姓名 / 日期 / 星期幾 / 上班時間 / 下班時間 / 備註
+// 這份表單同時也是「修正機制」：擁有者本來就是這份表單的Google帳號擁有者，
+// 打錯時間、忘記打下班卡等狀況，直接打開表單編輯儲存格即可修正，不需要另外做登入系統。
 const { google } = require('googleapis');
 const { getAuth, isConfigured } = require('./googleAuth');
 
 let sheetsClient = null;
 let knownSheetTitles = null; // 快取這份試算表目前有哪些分頁，避免每次打卡都重新查詢
+let headerCheckedTitles = new Set(); // 這次程式執行期間，已經確認過標題列是新格式的分頁，避免重複檢查
 
-const HEADER_ROW = ['姓名', 'LINE User ID', '類型', '時間', 'IP位址', '驗證結果'];
+const HEADER_ROW = ['姓名', '日期', '星期幾', '上班時間', '下班時間', '備註'];
+const WEEKDAY_NAMES = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 
 function getSheetsClient() {
   if (sheetsClient) return sheetsClient;
@@ -25,67 +30,195 @@ function quoteSheetName(title) {
   return `'${title.replace(/'/g, "''")}'`;
 }
 
+// 把ISO時間字串轉成台灣時間的日期/時間/星期幾
+function toTaipeiParts(isoTimestamp) {
+  const shifted = new Date(new Date(isoTimestamp).getTime() + 8 * 60 * 60 * 1000);
+  const dateStr = shifted.toISOString().slice(0, 10); // YYYY-MM-DD
+  const timeStr = shifted.toISOString().slice(11, 16); // HH:MM
+  const weekday = WEEKDAY_NAMES[shifted.getUTCDay()];
+  return { dateStr, timeStr, weekday };
+}
+
 async function loadKnownSheetTitles(sheets, spreadsheetId) {
   const { data } = await sheets.spreadsheets.get({ spreadsheetId });
   knownSheetTitles = new Set((data.sheets || []).map((s) => s.properties.title));
 }
 
-// 如果這位員工還沒有專屬分頁，就自動新增一個並加上標題列
+// 如果這位員工還沒有專屬分頁，就自動新增一個並加上標題列；
+// 如果分頁已存在但標題列是舊格式（例如串接初期的版本），自動清空重建成新格式，
+// 避免同一個分頁裡混著兩種欄位定義造成防呆邏輯誤判
 async function ensureSheetExists(sheets, spreadsheetId, title) {
   if (!knownSheetTitles) {
     await loadKnownSheetTitles(sheets, spreadsheetId);
   }
-  if (knownSheetTitles.has(title)) return;
 
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
-    requestBody: {
-      requests: [{ addSheet: { properties: { title } } }],
-    },
-  });
-  knownSheetTitles.add(title);
+  if (!knownSheetTitles.has(title)) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title } } }],
+      },
+    });
+    knownSheetTitles.add(title);
 
-  await sheets.spreadsheets.values.update({
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${quoteSheetName(title)}!A1:F1`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [HEADER_ROW] },
+    });
+    headerCheckedTitles.add(title);
+    return;
+  }
+
+  if (headerCheckedTitles.has(title)) return;
+
+  const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `${quoteSheetName(title)}!A1:F1`,
+  });
+  const currentHeader = (data.values && data.values[0]) || [];
+  const isNewFormat = HEADER_ROW.every((col, i) => currentHeader[i] === col);
+
+  if (!isNewFormat) {
+    // 舊格式分頁：清掉裡面的內容，換成新表頭重新開始（早期測試資料，直接重建即可）
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId,
+      range: `${quoteSheetName(title)}!A1:Z10000`,
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${quoteSheetName(title)}!A1:F1`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [HEADER_ROW] },
+    });
+  }
+
+  headerCheckedTitles.add(title);
+}
+
+async function getRows(sheets, spreadsheetId, title) {
+  const { data } = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${quoteSheetName(title)}!A2:F`,
+  });
+  return data.values || [];
+}
+
+function findRowIndexByDate(rows, dateStr) {
+  // 從後面找起，同一天理論上只會有一列，但如果表單被手動改過也以最新一筆為準
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i][1] === dateStr) return i;
+  }
+  return -1;
+}
+
+// 找「已經打上班卡、還沒打下班卡」的那一列（可能是今天、也可能是忘記打卡的前幾天），
+// 用來判斷下班卡可不可以打、以及要更新哪一列
+function findOpenShiftIndex(rows) {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const shangban = rows[i][3];
+    const xiaban = rows[i][4];
+    if (shangban && !xiaban) return i;
+  }
+  return -1;
+}
+
+// 更新某一列的單一欄位（D=上班時間, E=下班時間, F=備註）
+async function updateCell(sheets, spreadsheetId, title, rowNumber, column, value) {
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${quoteSheetName(title)}!${column}${rowNumber}`,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [HEADER_ROW] },
+    requestBody: { values: [[value]] },
   });
 }
 
-// 寫入一筆打卡紀錄到該員工專屬分頁；失敗時只印log、不擋住打卡流程（SQLite已經是即時的正式紀錄）
-async function appendPunchRecord({ name, lineUserId, type, timestamp, sourceIp, verified }) {
+async function appendRow(sheets, spreadsheetId, title, row) {
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `${quoteSheetName(title)}!A:F`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [row] },
+  });
+}
+
+/**
+ * 記錄一筆「成功」的打卡（已經通過LINE身份驗證＋公司WiFi驗證）。
+ * 內建防呆機制：
+ *  - 上班：如果今天已經打過上班卡，回傳 ok:false，不會重複紀錄
+ *  - 下班：如果找不到尚未結束的上班紀錄（代表根本沒打上班卡），回傳 ok:false
+ * 回傳 { ok, reason? }
+ */
+async function recordSuccessfulPunch({ name, type, timestamp }) {
   if (!isConfigured()) {
-    console.warn('[sheets] 尚未設定Google服務帳號環境變數，略過寫入Google試算表');
-    return;
+    // 沒設定Google表單環境變數時（例如本機測試），略過防呆檢查，一律放行
+    return { ok: true, skipped: true };
   }
+
+  const sheets = getSheetsClient();
+  const spreadsheetId = process.env.GOOGLE_SHEET_ID;
+  const sheetTitle = sanitizeSheetName(name);
+  await ensureSheetExists(sheets, spreadsheetId, sheetTitle);
+
+  const rows = await getRows(sheets, spreadsheetId, sheetTitle);
+  const { dateStr, timeStr, weekday } = toTaipeiParts(timestamp);
+
+  if (type === 'in') {
+    const todayIndex = findRowIndexByDate(rows, dateStr);
+    if (todayIndex !== -1 && rows[todayIndex][3]) {
+      return { ok: false, reason: '今天已經打過上班卡了，不能重複打卡' };
+    }
+    if (todayIndex !== -1) {
+      await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 2, 'D', timeStr);
+    } else {
+      await appendRow(sheets, spreadsheetId, sheetTitle, [name, dateStr, weekday, timeStr, '', '']);
+    }
+    return { ok: true };
+  }
+
+  // type === 'out'
+  const openIndex = findOpenShiftIndex(rows);
+  if (openIndex === -1) {
+    return { ok: false, reason: '尚未打上班卡，無法打下班卡' };
+  }
+  await updateCell(sheets, spreadsheetId, sheetTitle, openIndex + 2, 'E', timeStr);
+  return { ok: true };
+}
+
+// 記錄一筆「失敗」的打卡嘗試（例如沒連公司WiFi），寫進當天那一列的備註，不影響上/下班時間欄位
+async function logFailedAttempt({ name, type, timestamp, reason }) {
+  if (!isConfigured()) return;
 
   try {
     const sheets = getSheetsClient();
     const spreadsheetId = process.env.GOOGLE_SHEET_ID;
-    const sheetTitle = sanitizeSheetName(name || lineUserId);
-
+    const sheetTitle = sanitizeSheetName(name);
     await ensureSheetExists(sheets, spreadsheetId, sheetTitle);
 
-    await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range: `${quoteSheetName(sheetTitle)}!A:F`,
-      valueInputOption: 'USER_ENTERED',
-      insertDataOption: 'INSERT_ROWS',
-      requestBody: {
-        values: [[
-          name || '',
-          lineUserId || '',
-          type === 'in' ? '上班' : '下班',
-          timestamp,
-          sourceIp || '',
-          verified ? '成功' : '失敗（未連上公司網路）',
-        ]],
-      },
-    });
+    const rows = await getRows(sheets, spreadsheetId, sheetTitle);
+    const { dateStr, timeStr, weekday } = toTaipeiParts(timestamp);
+    const note = `${timeStr} ${type === 'in' ? '上班' : '下班'}打卡失敗（${reason}）；`;
+
+    const todayIndex = findRowIndexByDate(rows, dateStr);
+    if (todayIndex !== -1) {
+      const existing = rows[todayIndex][5] || '';
+      await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 2, 'F', existing + note);
+    } else {
+      await appendRow(sheets, spreadsheetId, sheetTitle, [name, dateStr, weekday, '', '', note]);
+    }
   } catch (err) {
-    console.error('[sheets] 寫入Google試算表失敗：', err.message);
+    console.error('[sheets] 記錄失敗打卡嘗試時發生錯誤：', err.message);
   }
 }
 
-module.exports = { appendPunchRecord, isConfigured, HEADER_ROW, sanitizeSheetName, quoteSheetName };
+module.exports = {
+  isConfigured,
+  recordSuccessfulPunch,
+  logFailedAttempt,
+  HEADER_ROW,
+  sanitizeSheetName,
+  quoteSheetName,
+  toTaipeiParts,
+};
