@@ -2,7 +2,7 @@
 // 使用情境：同事出任務提早離開、忘記在公司WiFi打下班卡等，防呆機制正確擋下但需要人工補登的狀況。
 const express = require('express');
 const { correctPunch, sortEmployeeSheet } = require('../sheets');
-const { listEmployeeSheetLinks } = require('../monthlyReport');
+const { listEmployeeSheetLinks, pushLineMessage } = require('../monthlyReport');
 
 const router = express.Router();
 
@@ -98,6 +98,24 @@ router.post('/admin/sort', async (req, res) => {
     return res.json({ ok: true, count: links.length });
   } catch (err) {
     console.error('[admin] 重新排序失敗：', err);
+    return res.status(500).json({ ok: false, message: err.message });
+  }
+});
+
+// POST /api/admin/send-link  body: { operator, password}  -> 把手動修正打卡頁面的網址推播到LINE，方便存底
+router.post('/admin/send-link', async (req, res) => {
+  const auth = authenticate(req);
+  if (!auth.ok) {
+    return res.status(401).json({ ok: false, message: '姓名或密碼錯誤' });
+  }
+  try {
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const text = `🔧 打卡紀錄手動修正頁面：\n${baseUrl}/admin/\n\n請用你自己的姓名＋密碼登入。`;
+    await pushLineMessage(text);
+    console.log(`[admin] 推送修正頁面連結成功：操作人=${auth.operator}`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[admin] 推送修正頁面連結失敗：', err);
     return res.status(500).json({ ok: false, message: err.message });
   }
 });
