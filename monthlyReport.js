@@ -5,9 +5,12 @@
 const { google } = require('googleapis');
 const axios = require('axios');
 const { getAuth, isConfigured: isGoogleConfigured } = require('./googleAuth');
-const { HEADER_ROW, quoteSheetName, sanitizeSheetName } = require('./sheets');
+const { quoteSheetName, sanitizeSheetName } = require('./sheets');
 
 const LEGACY_SHEET_TITLE = '工作表1'; // 早期還沒分人之前的舊分頁，月報彙整時要排除，避免重複計算
+// 月報彙整多位員工的明細時需要姓名欄；員工個人分頁現在把姓名放在最上面一列，不再跟著每天的資料重複，
+// 所以月報這裡用分頁名稱（跟姓名同源）補回姓名欄，明細表頭仍保留「姓名」方便一次看多位員工
+const REPORT_DETAIL_HEADER = ['姓名', '日期', '星期幾', '上班時間', '下班時間', '備註'];
 
 function isReportConfigured() {
   return !!(
@@ -43,6 +46,8 @@ async function getSpreadsheetMeta(sheets, spreadsheetId) {
 }
 
 // 撈出所有員工分頁裡，時間落在目標月份的資料列
+// 員工個人分頁的資料現在從第3列開始（第1列姓名、第2列表頭），欄位為：日期/星期幾/上班時間/下班時間/備註，
+// 姓名沒有存在每一列裡，這裡改用分頁名稱（跟姓名同源）補回姓名欄，方便月報彙整多位員工
 async function collectMonthRecords(sheets, spreadsheetId, year, month, meta) {
   const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
   const titles = (meta.sheets || [])
@@ -53,15 +58,16 @@ async function collectMonthRecords(sheets, spreadsheetId, year, month, meta) {
 
   const { data } = await sheets.spreadsheets.values.batchGet({
     spreadsheetId,
-    ranges: titles.map((t) => `${quoteSheetName(t)}!A2:F`),
+    ranges: titles.map((t) => `${quoteSheetName(t)}!A3:E`),
   });
 
   const rows = [];
-  (data.valueRanges || []).forEach((vr) => {
+  (data.valueRanges || []).forEach((vr, idx) => {
+    const name = titles[idx];
     (vr.values || []).forEach((row) => {
-      const dateStr = row[1] || ''; // 日期欄
+      const dateStr = row[0] || ''; // 日期欄
       if (dateStr.startsWith(monthPrefix)) {
-        rows.push(row);
+        rows.push([name, row[0] || '', row[1] || '', row[2] || '', row[3] || '', row[4] || '']);
       }
     });
   });
@@ -117,7 +123,7 @@ async function createReportSheet({ sheetsApi, spreadsheetId, year, month, rows }
       valueInputOption: 'USER_ENTERED',
       data: [
         { range: `${quoteSheetName(title)}!A1`, values: overviewRows },
-        { range: `${quoteSheetName(title)}!A${detailStartRow}`, values: [HEADER_ROW, ...rows] },
+        { range: `${quoteSheetName(title)}!A${detailStartRow}`, values: [REPORT_DETAIL_HEADER, ...rows] },
       ],
     },
   });

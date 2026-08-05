@@ -1,6 +1,9 @@
 // 將打卡紀錄永久寫入 Google 試算表（作為SQLite以外的永久備份，方便用Excel/Google試算表統計）
 // 每位員工會各自有一個分頁（工作表），彼此打卡紀錄不會混在一起。
-// 表格格式改成「一天一列」：姓名 / 日期 / 星期幾 / 上班時間 / 下班時間 / 備註
+// 表格格式：姓名放在最上面一列（跟日期等資訊分開），下面才是「一天一列」的打卡表格：
+//   第1列：姓名：xxx
+//   第2列：日期 / 星期幾 / 上班時間 / 下班時間 / 備註（表頭）
+//   第3列開始：每天一列的打卡資料
 // 這份表單同時也是「修正機制」：擁有者本來就是這份表單的Google帳號擁有者，
 // 打錯時間、忘記打下班卡等狀況，直接打開表單編輯儲存格即可修正，不需要另外做登入系統。
 const { google } = require('googleapis');
@@ -8,9 +11,11 @@ const { getAuth, isConfigured } = require('./googleAuth');
 
 let sheetsClient = null;
 let knownSheetTitles = null; // 快取這份試算表目前有哪些分頁，避免每次打卡都重新查詢
-let headerCheckedTitles = new Set(); // 這次程式執行期間，已經確認過標題列是新格式的分頁，避免重複檢查
+let headerCheckedTitles = new Set(); // 這次程式執行期間，已經確認過表頭是新格式的分頁，避免重複檢查
 
-const HEADER_ROW = ['姓名', '日期', '星期幾', '上班時間', '下班時間', '備註'];
+const NAME_LABEL = '姓名：';
+const HEADER_ROW = ['日期', '星期幾', '上班時間', '下班時間', '備註']; // A~E，資料表格的表頭（不含姓名）
+const OLD_HEADER_ROW = ['姓名', '日期', '星期幾', '上班時間', '下班時間', '備註']; // 舊格式：姓名跟資料同一列
 const WEEKDAY_NAMES = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 
 function getSheetsClient() {
@@ -44,10 +49,20 @@ async function loadKnownSheetTitles(sheets, spreadsheetId) {
   knownSheetTitles = new Set((data.sheets || []).map((s) => s.properties.title));
 }
 
-// 如果這位員工還沒有專屬分頁，就自動新增一個並加上標題列；
-// 如果分頁已存在但標題列是舊格式（例如串接初期的版本），自動清空重建成新格式，
-// 避免同一個分頁裡混著兩種欄位定義造成防呆邏輯誤判
-async function ensureSheetExists(sheets, spreadsheetId, title) {
+// 寫入「姓名列＋表頭列」（A1:E2），姓名只出現這一次，不會跟著每天的資料重複
+async function writeNameAndHeader(sheets, spreadsheetId, title, employeeName) {
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${quoteSheetName(title)}!A1:E2`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[NAME_LABEL, employeeName, '', '', ''], HEADER_ROW] },
+  });
+}
+
+// 如果這位員工還沒有專屬分頁，就自動新增一個並加上姓名列＋表頭列；
+// 如果分頁已存在但格式是舊版（姓名跟資料同一列），自動把姓名搬到最上面一列，
+// 資料列轉成新格式後重新寫入，盡量保留既有的打卡紀錄，避免資料遺失。
+async function ensureSheetExists(sheets, spreadsheetId, title, employeeName) {
   if (!knownSheetTitles) {
     await loadKnownSheetTitles(sheets, spreadsheetId);
   }
@@ -60,13 +75,7 @@ async function ensureSheetExists(sheets, spreadsheetId, title) {
       },
     });
     knownSheetTitles.add(title);
-
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `${quoteSheetName(title)}!A1:F1`,
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [HEADER_ROW] },
-    });
+    await writeNameAndHeader(sheets, spreadsheetId, title, employeeName);
     headerCheckedTitles.add(title);
     return;
   }
@@ -75,32 +84,55 @@ async function ensureSheetExists(sheets, spreadsheetId, title) {
 
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${quoteSheetName(title)}!A1:F1`,
+    range: `${quoteSheetName(title)}!A1:F2`,
   });
-  const currentHeader = (data.values && data.values[0]) || [];
-  const isNewFormat = HEADER_ROW.every((col, i) => currentHeader[i] === col);
+  const values = data.values || [];
+  const row1 = values[0] || [];
+  const row2 = values[1] || [];
 
-  if (!isNewFormat) {
-    // 舊格式分頁：清掉裡面的內容，換成新表頭重新開始（早期測試資料，直接重建即可）
-    await sheets.spreadsheets.values.clear({
+  const isNewFormat = row1[0] === NAME_LABEL && HEADER_ROW.every((col, i) => row2[i] === col);
+  if (isNewFormat) {
+    headerCheckedTitles.add(title);
+    return;
+  }
+
+  // 判斷是不是舊格式（第一列就是「姓名/日期/星期幾/上班時間/下班時間/備註」表頭）
+  const isOldFormat = OLD_HEADER_ROW.every((col, i) => row1[i] === col);
+
+  let migratedRows = [];
+  if (isOldFormat) {
+    const { data: oldData } = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${quoteSheetName(title)}!A1:Z10000`,
+      range: `${quoteSheetName(title)}!A2:F`,
     });
+    // 舊格式欄位為：姓名/日期/星期幾/上班時間/下班時間/備註，轉成新格式只留：日期/星期幾/上班時間/下班時間/備註
+    migratedRows = (oldData.values || []).map((r) => [r[1] || '', r[2] || '', r[3] || '', r[4] || '', r[5] || '']);
+  }
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId,
+    range: `${quoteSheetName(title)}!A1:Z10000`,
+  });
+
+  await writeNameAndHeader(sheets, spreadsheetId, title, employeeName);
+
+  if (migratedRows.length > 0) {
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${quoteSheetName(title)}!A1:F1`,
+      range: `${quoteSheetName(title)}!A3`,
       valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [HEADER_ROW] },
+      requestBody: { values: migratedRows },
     });
   }
 
   headerCheckedTitles.add(title);
 }
 
+// 資料從第3列開始（第1列姓名、第2列表頭），欄位為：日期/星期幾/上班時間/下班時間/備註
 async function getRows(sheets, spreadsheetId, title) {
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${quoteSheetName(title)}!A2:F`,
+    range: `${quoteSheetName(title)}!A3:E`,
   });
   return data.values || [];
 }
@@ -108,7 +140,7 @@ async function getRows(sheets, spreadsheetId, title) {
 function findRowIndexByDate(rows, dateStr) {
   // 從後面找起，同一天理論上只會有一列，但如果表單被手動改過也以最新一筆為準
   for (let i = rows.length - 1; i >= 0; i--) {
-    if (rows[i][1] === dateStr) return i;
+    if (rows[i][0] === dateStr) return i;
   }
   return -1;
 }
@@ -117,14 +149,14 @@ function findRowIndexByDate(rows, dateStr) {
 // 用來判斷下班卡可不可以打、以及要更新哪一列
 function findOpenShiftIndex(rows) {
   for (let i = rows.length - 1; i >= 0; i--) {
-    const shangban = rows[i][3];
-    const xiaban = rows[i][4];
+    const shangban = rows[i][2];
+    const xiaban = rows[i][3];
     if (shangban && !xiaban) return i;
   }
   return -1;
 }
 
-// 更新某一列的單一欄位（D=上班時間, E=下班時間, F=備註）
+// 更新某一列的單一欄位（C=上班時間, D=下班時間, E=備註）
 async function updateCell(sheets, spreadsheetId, title, rowNumber, column, value) {
   await sheets.spreadsheets.values.update({
     spreadsheetId,
@@ -137,7 +169,7 @@ async function updateCell(sheets, spreadsheetId, title, rowNumber, column, value
 async function appendRow(sheets, spreadsheetId, title, row) {
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: `${quoteSheetName(title)}!A:F`,
+    range: `${quoteSheetName(title)}!A:E`,
     valueInputOption: 'USER_ENTERED',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [row] },
@@ -160,20 +192,20 @@ async function recordSuccessfulPunch({ name, type, timestamp }) {
   const sheets = getSheetsClient();
   const spreadsheetId = process.env.GOOGLE_SHEET_ID;
   const sheetTitle = sanitizeSheetName(name);
-  await ensureSheetExists(sheets, spreadsheetId, sheetTitle);
+  await ensureSheetExists(sheets, spreadsheetId, sheetTitle, name);
 
   const rows = await getRows(sheets, spreadsheetId, sheetTitle);
   const { dateStr, timeStr, weekday } = toTaipeiParts(timestamp);
 
   if (type === 'in') {
     const todayIndex = findRowIndexByDate(rows, dateStr);
-    if (todayIndex !== -1 && rows[todayIndex][3]) {
+    if (todayIndex !== -1 && rows[todayIndex][2]) {
       return { ok: false, reason: '今天已經打過上班卡囉' };
     }
     if (todayIndex !== -1) {
-      await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 2, 'D', timeStr);
+      await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 3, 'C', timeStr);
     } else {
-      await appendRow(sheets, spreadsheetId, sheetTitle, [name, dateStr, weekday, timeStr, '', '']);
+      await appendRow(sheets, spreadsheetId, sheetTitle, [dateStr, weekday, timeStr, '', '']);
     }
     return { ok: true };
   }
@@ -183,7 +215,7 @@ async function recordSuccessfulPunch({ name, type, timestamp }) {
   if (openIndex === -1) {
     return { ok: false, reason: '尚未打上班卡，無法打下班卡' };
   }
-  await updateCell(sheets, spreadsheetId, sheetTitle, openIndex + 2, 'E', timeStr);
+  await updateCell(sheets, spreadsheetId, sheetTitle, openIndex + 3, 'D', timeStr);
   return { ok: true };
 }
 
@@ -195,7 +227,7 @@ async function logFailedAttempt({ name, type, timestamp, reason }) {
     const sheets = getSheetsClient();
     const spreadsheetId = process.env.GOOGLE_SHEET_ID;
     const sheetTitle = sanitizeSheetName(name);
-    await ensureSheetExists(sheets, spreadsheetId, sheetTitle);
+    await ensureSheetExists(sheets, spreadsheetId, sheetTitle, name);
 
     const rows = await getRows(sheets, spreadsheetId, sheetTitle);
     const { dateStr, timeStr, weekday } = toTaipeiParts(timestamp);
@@ -203,10 +235,10 @@ async function logFailedAttempt({ name, type, timestamp, reason }) {
 
     const todayIndex = findRowIndexByDate(rows, dateStr);
     if (todayIndex !== -1) {
-      const existing = rows[todayIndex][5] || '';
-      await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 2, 'F', existing + note);
+      const existing = rows[todayIndex][4] || '';
+      await updateCell(sheets, spreadsheetId, sheetTitle, todayIndex + 3, 'E', existing + note);
     } else {
-      await appendRow(sheets, spreadsheetId, sheetTitle, [name, dateStr, weekday, '', '', note]);
+      await appendRow(sheets, spreadsheetId, sheetTitle, [dateStr, weekday, '', '', note]);
     }
   } catch (err) {
     console.error('[sheets] 記錄失敗打卡嘗試時發生錯誤：', err.message);
@@ -218,6 +250,7 @@ module.exports = {
   recordSuccessfulPunch,
   logFailedAttempt,
   HEADER_ROW,
+  NAME_LABEL,
   sanitizeSheetName,
   quoteSheetName,
   toTaipeiParts,
