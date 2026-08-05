@@ -181,4 +181,28 @@ async function runMonthlyReport({ overrideYear, overrideMonth } = {}) {
   return { year, month, count: rows.length, sent: true, url: report.url };
 }
 
-module.exports = { runMonthlyReport, resolveTargetMonth, isReportConfigured, pushLineMessage };
+// 列出目前每位員工分頁的直接連結（跳過「工作表1」這種早期測試留下的舊分頁、以及月報分頁），
+// 用來取代「純粹貼整份試算表的連結」——因為那樣打開會停在第一個分頁（工作表1，還是舊格式），
+// 不會直接看到真正的打卡紀錄
+async function listEmployeeSheetLinks() {
+  const auth = getAuth();
+  const sheetsApi = google.sheets({ version: 'v4', auth });
+  const spreadsheetId = process.env.GOOGLE_SHEET_ID;
+  const meta = await getSpreadsheetMeta(sheetsApi, spreadsheetId);
+
+  return (meta.sheets || [])
+    .map((s) => s.properties)
+    .filter((p) => p.title !== LEGACY_SHEET_TITLE && !p.title.startsWith('月報_'))
+    .map((p) => ({
+      name: p.title,
+      url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${p.sheetId}`,
+    }));
+}
+
+module.exports = {
+  runMonthlyReport,
+  resolveTargetMonth,
+  isReportConfigured,
+  pushLineMessage,
+  listEmployeeSheetLinks,
+};

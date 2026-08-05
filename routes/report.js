@@ -1,5 +1,5 @@
 const express = require('express');
-const { runMonthlyReport, pushLineMessage, isReportConfigured } = require('../monthlyReport');
+const { runMonthlyReport, pushLineMessage, isReportConfigured, listEmployeeSheetLinks } = require('../monthlyReport');
 
 const router = express.Router();
 
@@ -24,6 +24,7 @@ router.post('/monthly-report/run', async (req, res) => {
 });
 
 // POST /api/monthly-report/send-link  -> 把目前的打卡紀錄表單連結用LINE推播給老闆自己（方便隨時要連結時手動觸發）
+// 直接連到每位員工的分頁（跳過「工作表1」這種舊格式的分頁，避免打開連結卻看到舊版表格）
 // 一樣需要 x-cron-secret 才能觸發
 router.post('/monthly-report/send-link', async (req, res) => {
   const secret = req.header('x-cron-secret');
@@ -36,9 +37,17 @@ router.post('/monthly-report/send-link', async (req, res) => {
   }
 
   try {
-    const spreadsheetId = process.env.GOOGLE_SHEET_ID;
-    const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-    await pushLineMessage(`📋 打卡紀錄表單連結：\n${url}`);
+    const links = await listEmployeeSheetLinks();
+    let text;
+    if (links.length === 0) {
+      const spreadsheetId = process.env.GOOGLE_SHEET_ID;
+      text = `📋 打卡紀錄表單連結：\nhttps://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+    } else if (links.length === 1) {
+      text = `📋 打卡紀錄表單連結：\n${links[0].url}`;
+    } else {
+      text = `📋 打卡紀錄表單連結：\n${links.map((l) => `${l.name}：\n${l.url}`).join('\n\n')}`;
+    }
+    await pushLineMessage(text);
     return res.json({ ok: true });
   } catch (err) {
     console.error('[monthly-report] 推送表單連結失敗：', err);
