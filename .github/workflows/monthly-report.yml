@@ -4,7 +4,14 @@ on:
   schedule:
     # 00:05 UTC = 台灣時間每月1日 08:05
     - cron: '5 0 1 * *'
-  workflow_dispatch: {} # 允許在GitHub網頁上手動觸發，方便測試
+  workflow_dispatch: # 允許在GitHub網頁上手動觸發，方便測試；year/month留空就是正式的「上個月」邏輯
+    inputs:
+      year:
+        description: '（測試用，選填）指定年份，例如 2026'
+        required: false
+      month:
+        description: '（測試用，選填）指定月份，例如 8'
+        required: false
 
 jobs:
   trigger-monthly-report:
@@ -14,6 +21,12 @@ jobs:
         run: |
           curl -sS --max-time 60 https://godzhunan-linebot-1.onrender.com/health || true
           sleep 30
+          YEAR="${{ github.event.inputs.year }}"
+          MONTH="${{ github.event.inputs.month }}"
+          URL="https://godzhunan-linebot-1.onrender.com/api/monthly-report/run"
+          if [ -n "$YEAR" ] && [ -n "$MONTH" ]; then
+            URL="${URL}?year=${YEAR}&month=${MONTH}"
+          fi
           curl -f --max-time 120 -X POST \
             -H "x-cron-secret: ${{ secrets.REPORT_CRON_SECRET }}" \
-            https://godzhunan-linebot-1.onrender.com/api/monthly-report/run
+            "$URL"
